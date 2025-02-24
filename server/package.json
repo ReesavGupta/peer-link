@@ -1,21 +1,24 @@
 {
   "name": "server",
   "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "dev":  "DEBUG=mediasoup:* bun run ./src/index"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
   },
-  "scripts": {
-    "dev": "DEBUG=mediasoup:* bun run ./src/index.ts"
-  },
-  "type": "module",
   "dependencies": {
     "@types/express": "^5.0.0",
     "@types/ws": "^8.5.14",
     "express": "^4.21.2",
     "mediasoup": "^3.15.4",
     "ws": "^8.18.1"
-  }
+  },
+  "trustedDependencies": [
+    "mediasoup"
+  ]
 }

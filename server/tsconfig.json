@@ -23,7 +23,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false,
-    "rootDir": "./src",
-    "outDir": "./dist"
+    "outDir": "./dist",
+    "rootDir": "./src"
   }
 }

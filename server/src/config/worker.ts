@@ -10,7 +10,9 @@ const workers: Array<{
 
 let nextMediaSoupWorkerIndex = 0
 
-const createWorker = async (): Promise<void> => {
+const createWorker = async (): Promise<
+  mediasoup.types.Router<mediasoup.types.AppData>
+> => {
   const worker = await mediasoup.createWorker({
     logLevel: config.mediasoup.worker.logLevel,
     logTags: config.mediasoup.worker.logTags,
@@ -25,6 +27,10 @@ const createWorker = async (): Promise<void> => {
       process.exit(1)
     }, 2000)
   })
+
+  const mediaCodecs = config.mediasoup.router.mediaCodes
+  const mediaSoupRouter = await worker.createRouter({ mediaCodecs })
+  return mediaSoupRouter
 }
 
 export { createWorker }

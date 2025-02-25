@@ -1,7 +1,8 @@
-import { WebSocketServer } from 'ws'
+import WebSocket, { WebSocketServer } from 'ws'
 import { createWorker } from '../config/worker'
+import type { Router } from 'mediasoup/node/lib/RouterTypes'
 
-let mediasoupRouter
+let mediasoupRouter: Router
 const WebSocketConnection = async (io: WebSocketServer) => {
   try {
     mediasoupRouter = await createWorker()
@@ -12,10 +13,29 @@ const WebSocketConnection = async (io: WebSocketServer) => {
 
   io.on('connection', (socket) => {
     socket.on('message', (data) => {
-      console.log(data.toString())
-      socket.send('hiiiii')
+      const message = JSON.parse(data.toString())
+
+      switch (message.type) {
+        case 'getRouterRtpCapabilities':
+          onGetRouterRtpCapability(socket)
+          break
+
+        default:
+          break
+      }
     })
   })
+
+  const onGetRouterRtpCapability = (socket: WebSocket) => {
+    send(socket, 'routerCapabilities', mediasoupRouter.rtpCapabilities)
+  }
+  const send = (socket: WebSocket, type: string, data: any) => {
+    const message = {
+      type,
+      data,
+    }
+    socket.send(JSON.stringify(message))
+  }
 }
 
 export { WebSocketConnection }

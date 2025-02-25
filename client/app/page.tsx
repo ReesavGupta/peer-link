@@ -1,71 +1,90 @@
+'use client'
+
 import { useEffect, useState, useRef } from 'react'
-import WebSocket from 'ws'
+
+const wsUrl = `ws://localhost:4000/`
+
 export default function Home() {
-  const wsUrl = 'ws://localhost:3000/'
   const [socket, setSocket] = useState<WebSocket | null>(null)
 
-  const [textPublish, setTextPublish] = useState('Publish')
-  const [textWebcam, setTextWebcam] = useState('Share Video')
-  const [textScreen, setTextScreen] = useState('Share Screen')
-  const [textSubscribe, setTextSubscribe] = useState('Subscribe')
-
-  const localVideo = useRef(null)
-  const remoteVideo = useRef(null)
-  const [remoteStream, setRemoteStream] = useState(null)
+  const [textWebcam, setTextWebcam] = useState('📷 Share Video')
+  const [textScreen, setTextScreen] = useState('🖥️ Share Screen')
+  const [textSubscribe, setTextSubscribe] = useState('📡 Subscribe')
   const [device, setDevice] = useState(null)
-  const [producer, setProducer] = useState(null)
-  const [consumeTransport, setConsumeTransport] = useState(null)
-  const [userId, setUserId] = useState(null)
-  const [isWebcam, setIsWebcam] = useState(true)
 
-  const produceCallback = () => console.log('Producing stream...')
-  const produceErrback = (error: Error) =>
-    console.error('Error producing:', error)
-  const consumerCallback = () => console.log('Consuming stream...')
-  const consumerErrback = (error: Error) =>
-    console.error('Error consuming:', error)
+  const localVideo = useRef<HTMLVideoElement | null>(null)
+  const remoteVideo = useRef<HTMLVideoElement | null>(null)
 
   useEffect(() => {
-    // Connect WebSocket
     const ws = new WebSocket(wsUrl)
 
-    ws.onopen = () => {
-      console.log('Connected to WebSocket')
+    ws.onopen = (socket) => {
+      console.log(`✅ Connected to WebSocket`)
       setSocket(ws)
+      const msg = {
+        type: `getRouterRtpCapabilities`,
+      }
+      ws.send(JSON.stringify(msg))
     }
 
     ws.onmessage = (event) => {
-      const data = JSON.parse(event.data.toLocaleString())
-      console.log('WebSocket message:', data)
+      const data = JSON.parse(event.data)
+      console.log('📩 WebSocket message:', data)
+
+      switch (data) {
+        case 'routerCapabilities':
+          onRouterCapabilities(data)
+          break
+
+        default:
+          break
+      }
     }
 
-    ws.onerror = (error) => console.error('WebSocket error:', error)
-    ws.onclose = () => console.log('WebSocket disconnected')
+    ws.onerror = (error) => console.error('❌ WebSocket error:', error)
+    ws.onclose = () => console.log('⚠️ WebSocket disconnected')
 
     return () => ws.close()
   }, [])
 
+  const onRouterCapabilities = (routerCapabilities) => {
+    setDevice(routerCapabilities.data)
+    // un-disable the subscribe button
+    // un-disable the screen button as well
+  }
+
   return (
-    <div>
-      <div>this is sample WebRTC using Mediasoup</div>
-      <div>
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-5">
+      <h1 className="text-2xl font-bold mb-5">
+        🚀 Mediasoup + WebRTC Playground
+      </h1>
+
+      <div className="grid grid-cols-2 gap-4 w-full max-w-4xl">
         <video
           ref={localVideo}
-          playsInline
+          className="w-full rounded-lg border"
           autoPlay
-        ></video>
-      </div>
-      <div>
+          playsInline
+        />
         <video
           ref={remoteVideo}
-          playsInline
+          className="w-full rounded-lg border"
           autoPlay
-        ></video>
+          playsInline
+        />
       </div>
 
-      <button id="btnCam">{textWebcam}</button>
-      <button id="btnScreen">{textScreen}</button>
-      <button id="btnSub">{textSubscribe}</button>
+      <div className="mt-6 flex gap-4">
+        <button className="px-4 py-2 bg-blue-500 rounded-lg hover:bg-blue-600 transition">
+          {textWebcam}
+        </button>
+        <button className="px-4 py-2 bg-green-500 rounded-lg hover:bg-green-600 transition">
+          {textScreen}
+        </button>
+        <button className="px-4 py-2 bg-purple-500 rounded-lg hover:bg-purple-600 transition">
+          {textSubscribe}
+        </button>
+      </div>
     </div>
   )
 }

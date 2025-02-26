@@ -31,9 +31,9 @@ export default function Home() {
       const data = JSON.parse(event.data)
       console.log('📩 WebSocket message:', data)
 
-      switch (data) {
+      switch (data.type) {
         case 'routerCapabilities':
-          onRouterCapabilities(data)
+          onRouterCapabilities(data.data)
           break
 
         default:
@@ -48,9 +48,8 @@ export default function Home() {
   }, [])
 
   const onRouterCapabilities = (routerCapabilities) => {
-    setDevice(routerCapabilities.data)
-    // un-disable the subscribe button
-    // un-disable the screen button as well
+    console.log(`this is routerCapabilities:`, routerCapabilities)
+    setDevice(routerCapabilities)
   }
 
   return (

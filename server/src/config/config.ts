@@ -50,6 +50,8 @@ export const config = {
           announcedIp: '127.0.0.1', //replace by public IP in prod
         },
       ] as TransportListenInfo[],
+      maxIncomeBitrate: 150000,
+      initialAvailableOutgoingBitrate: 1000000,
     },
   },
 } as const

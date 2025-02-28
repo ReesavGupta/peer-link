@@ -3,7 +3,6 @@ import * as http from 'http'
 import { WebSocketServer } from 'ws'
 import { WebSocketConnection } from './lib/ws'
 async function main() {
-  console.log(`this is main`)
   const app = express()
   const server = http.createServer(app)
   const io = new WebSocketServer({ server })

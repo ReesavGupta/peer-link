@@ -1,7 +1,7 @@
 'use client'
 
 import { RtpCapabilities } from 'mediasoup-client/lib/RtpParameters'
-import { Producer, Transport } from 'mediasoup-client/lib/types'
+import { AppData, Device, Transport } from 'mediasoup-client/lib/types'
 import { useEffect, useState, useRef } from 'react'
 
 const wsUrl = `ws://localhost:4000/`
@@ -13,7 +13,10 @@ export default function Home() {
   const [textScreen, setTextScreen] = useState('🖥️ Share Screen')
   const [textSubscribe, setTextSubscribe] = useState('📡 Subscribe')
   const [textPublish, setTextPublish] = useState('')
-  const [device, setDevice] = useState<RtpCapabilities | null>(null)
+
+  const [transport, setTransport] = useState<Transport<AppData>>()
+
+  const [device, setDevice] = useState<Device | null>(null)
 
   const webcamButtonRef = useRef<HTMLButtonElement>(null)
   const screenButtonRef = useRef<HTMLButtonElement>(null)
@@ -67,7 +70,8 @@ export default function Home() {
 
   const onRouterCapabilities = (routerCapabilities: RtpCapabilities) => {
     console.log(`this is routerCapabilities:`, routerCapabilities)
-    setDevice(routerCapabilities)
+    loadDevice(routerCapabilities)
+    // setDevice(routerCapabilities)
   }
 
   const onProducerTransportCreated = (data) => {
@@ -75,9 +79,12 @@ export default function Home() {
     if (!device) {
       return
     }
-    const transport = device.createSendTransport(data)
-
-    transport.on('connect', ({ dtlsParameters }, callback, errback) => {
+    const createdTransport = device.createSendTransport(data)
+    if (!createdTransport) {
+      console.log(`failed to create transport`)
+    }
+    setTransport(createdTransport)
+    transport?.on('connect', ({ dtlsParameters }, callback, errback) => {
       const message = {
         type: 'connectProducerTransport',
         dtlsParameters,
@@ -93,10 +100,10 @@ export default function Home() {
 
     // begin tranport on producer
     // mediasoup separates video and audio, hence we need to do another trasport for audio as well
-    transport.on('produce', ({ kind, rtpParameters }, callback, errback) => {
+    transport?.on('produce', ({ kind, rtpParameters }, callback, errback) => {
       const message = {
         type: 'produce',
-        transportId: transport.id,
+        transportId: transport?.id,
         kind,
         rtpParameters,
       }
@@ -110,7 +117,7 @@ export default function Home() {
       })
     })
 
-    transport.on('connectionStateChange', (state) => {
+    transport?.on('connectionstatechange', (state) => {
       switch (state) {
         case 'connecting':
           setTextPublish('publishing.....')
@@ -149,7 +156,7 @@ export default function Home() {
     const message = {
       type: 'createProducerTransport',
       forceTcp: false,
-      routerRtpCapabilities: device,
+      routerRtpCapabilities: device.rtpCapabilities,
     }
 
     socket?.send(JSON.stringify(message))
@@ -186,12 +193,28 @@ export default function Home() {
       const track = stream?.getVideoTracks()[0]
       const params = { track }
 
-      producer = await transport.produce(params)
+      producer = await transport?.produce(params)
     } catch (error) {
       console.error(error)
       setTextPublish('failed')
     }
   }, [])
+
+  const loadDevice = async (routerCapabilities: RtpCapabilities) => {
+    try {
+      const mediaSoupDevice = new Device()
+      if (!mediaSoupDevice) {
+        console.log('couldnt create mediaSoupDevice')
+      }
+      setDevice(mediaSoupDevice)
+      await mediaSoupDevice.load({ routerRtpCapabilities: routerCapabilities })
+    } catch (e) {
+      console.log(
+        'something went wrong while creating the mediasoup device: ',
+        e as any
+      )
+    }
+  }
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-5">

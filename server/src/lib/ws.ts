@@ -22,26 +22,38 @@ const WebSocketConnection = async (io: WebSocketServer) => {
 
   io.on('connection', (socket) => {
     socket.on('message', (data) => {
-      const message = JSON.parse(data.toString())
+      console.log('Received message:', data.toString())
 
-      switch (message.type) {
-        case 'getRouterRtpCapabilities':
-          onGetRouterRtpCapability(socket)
-          break
+      try {
+        const message = JSON.parse(data.toString())
+        console.log('Parsed message type:', message.type)
 
-        case 'createProducerTransport':
-          onCreateProducerTransport(socket)
-          break
+        switch (message.type) {
+          case 'getRouterRtpCapabilities':
+            console.log('Processing getRouterRtpCapabilities')
+            onGetRouterRtpCapability(socket)
+            break
 
-        case 'connectProducerTransport':
-          onConnectProducerTransport(socket, message)
-          break
+          case 'createProducerTransport':
+            console.log('Processing createProducerTransport')
+            onCreateProducerTransport(socket)
+            break
 
-        case 'produce':
-          onProduce(socket, message, io)
-          break
-        default:
-          break
+          case 'connectProducerTransport':
+            console.log('Processing connectProducerTransport')
+            onConnectProducerTransport(socket, message)
+            break
+
+          case 'produce':
+            console.log('Processing produce')
+            onProduce(socket, message, io)
+            break
+          default:
+            console.log('Unknown message type:', message.type)
+            break
+        }
+      } catch (error) {
+        console.error('Error processing message:', error)
       }
     })
   })
@@ -74,8 +86,24 @@ const WebSocketConnection = async (io: WebSocketServer) => {
       dtlsParameters: DtlsParameters
     }
   ) => {
-    await producerTransport.connect({ dtlsParameters: message.dtlsParameters })
-    send(socket, 'producerConnected', 'producer connected!!!')
+    console.log(
+      '\nConnecting producer transport with DTLS params:',
+      message.dtlsParameters
+    )
+
+    try {
+      await producerTransport.connect({
+        dtlsParameters: message.dtlsParameters,
+      })
+      console.log('Producer transport connected successfully')
+      send(socket, 'producerTransportConnected', { success: true })
+    } catch (error) {
+      console.error('Failed to connect producer transport:', error)
+      send(socket, 'error', {
+        message: 'Failed to connect producer transport',
+        details: (error as any).message,
+      })
+    }
   }
 
   const onProduce = async (

@@ -62,88 +62,63 @@ export default function Home() {
     try {
       const mediaSoupDevice = new Device()
       await mediaSoupDevice.load({ routerRtpCapabilities: routerCapabilities })
-
-      setDevice(() => {
-        console.log(`✅ Loaded Mediasoup device successfully`, mediaSoupDevice)
-        return mediaSoupDevice
-      })
+      setDevice(mediaSoupDevice)
+      console.log(`✅ Loaded Mediasoup device successfully`)
     } catch (error) {
       console.error('Error creating Mediasoup device:', error)
     }
   }
 
   const onProducerTransportCreated = (data: any) => {
-    setDevice((currentDevice) => {
-      if (!currentDevice) {
-        console.error('❌ Device is null inside onProducerTransportCreated!')
-        return null
-      }
+    if (!device) return
 
-      console.log('🎯 Using latest device:', currentDevice)
-      const createdTransport = currentDevice.createSendTransport(data)
-      setTransport(createdTransport)
+    const createdTransport = device.createSendTransport(data)
+    setTransport(createdTransport)
 
-      createdTransport.on('connect', ({ dtlsParameters }, callback) => {
+    createdTransport.on('connect', ({ dtlsParameters }, callback) => {
+      socket?.send(
+        JSON.stringify({ type: 'connectProducerTransport', dtlsParameters })
+      )
+      callback()
+    })
 
-        console.log('🔹 Connecting producer transport...')
-        
-        socket?.send(
-          JSON.stringify({ type: 'connectProducerTransport', dtlsParameters })
-        )
-
-        // Create a one-time event listener for the response
-        const messageHandler = (e: any) => {
-          const response = JSON.parse(e.data)
-          if (response.type === 'producerTransportConnected') {
-            callback() // Call the callback!
-            socket?.removeEventListener('message', messageHandler)
-          }
-        }
-
-        socket?.addEventListener('message', messageHandler)
-      })
-
-      createdTransport.on('produce', ({ kind, rtpParameters }, callback) => {
-        socket?.send(
-          JSON.stringify({
-            type: 'produce',
-            transportId: createdTransport.id,
-            kind,
-            rtpParameters,
-          })
-        )
-        socket?.addEventListener('message', (event) => {
-          const response = JSON.parse(event.data)
-          if (response.type === 'produced') callback(response.data.id)
+    createdTransport.on('produce', ({ kind, rtpParameters }, callback) => {
+      socket?.send(
+        JSON.stringify({
+          type: 'produce',
+          transportId: createdTransport.id,
+          kind,
+          rtpParameters,
         })
+      )
+      socket?.addEventListener('message', (event) => {
+        const response = JSON.parse(event.data)
+        if (response.type === 'produced') callback(response.data.id)
       })
+    })
 
-      createdTransport.on('connectionstatechange', (state) => {
-        switch (state) {
-          case 'connecting':
-            setTextPublish('Publishing...')
-            break
-          case 'connected':
-            if (localVideo.current) {
-              localVideo.current.srcObject = stream
-            }
-            setTextPublish('Published ✅')
-            break
-          case 'failed':
-            createdTransport.close()
-            setTextPublish('Failed to publish ❌')
-            break
-        }
-      })
-
-      return currentDevice
+    createdTransport.on('connectionstatechange', (state) => {
+      switch (state) {
+        case 'connecting':
+          setTextPublish('Publishing...')
+          break
+        case 'connected':
+          if (localVideo.current) {
+            localVideo.current.srcObject = stream
+          }
+          setTextPublish('Published ✅')
+          break
+        case 'failed':
+          createdTransport.close()
+          setTextPublish('Failed to publish ❌')
+          break
+      }
     })
   }
 
   const publish = async (e: any) => {
     console.log(`🔹 Publishing...`)
-    const isWebcam = e.target.id === 'btn_webcam'
-    setIsWebCam(isWebcam) // Update state
+    setIsWebCam(e.target.id === 'btn_webcam')
 
     if (webcamButtonRef.current) webcamButtonRef.current.disabled = true
     if (screenButtonRef.current) screenButtonRef.current.disabled = true
@@ -154,7 +129,7 @@ export default function Home() {
     }
 
     try {
-      const localStream = isWebcam // Use the local variable, not the state
+      const localStream = isWebCam
         ? await navigator.mediaDevices.getUserMedia({
             audio: true,
             video: true,

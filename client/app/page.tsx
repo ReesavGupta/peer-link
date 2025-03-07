@@ -7,23 +7,33 @@ import { useEffect, useState, useRef } from 'react'
 const wsUrl = `ws://localhost:4000/`
 
 export default function Home() {
+  // WebSocket and Mediasoup device states
   const [socket, setSocket] = useState<WebSocket | null>(null)
   const [device, setDevice] = useState<Device | null>(null)
   const [transport, setTransport] = useState<Transport<AppData> | null>(null)
-  const [stream, setStream] = useState<MediaStream | null>(null)
 
+  // Media stream states
+  const [stream, setStream] = useState<MediaStream | null>(null)
+  const streamRef = useRef<MediaStream | null>(null) // Holds stream reference
+
+  // UI states for button texts
   const [textWebcam, setTextWebcam] = useState('📷 Share Video')
   const [textScreen, setTextScreen] = useState('🖥️ Share Screen')
   const [textSubscribe, setTextSubscribe] = useState('📡 Subscribe')
   const [textPublish, setTextPublish] = useState('')
 
+  // Button and video element references
   const webcamButtonRef = useRef<HTMLButtonElement>(null)
   const screenButtonRef = useRef<HTMLButtonElement>(null)
   const localVideo = useRef<HTMLVideoElement | null>(null)
   const remoteVideo = useRef<HTMLVideoElement | null>(null)
 
+  // Track whether user is sharing webcam or screen
   const [isWebCam, setIsWebCam] = useState(true)
 
+  /**
+   * Establish WebSocket connection and fetch router RTP capabilities
+   */
   useEffect(() => {
     const ws = new WebSocket(wsUrl)
 
@@ -41,11 +51,9 @@ export default function Home() {
         case 'routerCapabilities':
           onRouterCapabilities(data.data)
           break
-
         case 'producerTransportCreated':
           onProducerTransportCreated(data.data, ws)
           break
-
         default:
           console.warn('Unknown WebSocket message type:', data.type)
           break
@@ -58,6 +66,9 @@ export default function Home() {
     return () => ws.close()
   }, [])
 
+  /**
+   * Initialize Mediasoup device with router RTP capabilities
+   */
   const onRouterCapabilities = async (routerCapabilities: RtpCapabilities) => {
     try {
       const mediaSoupDevice = new Device()
@@ -72,6 +83,9 @@ export default function Home() {
     }
   }
 
+  /**
+   * Create producer transport for sending media
+   */
   const onProducerTransportCreated = (data: any, mySocket: WebSocket) => {
     setDevice((currentDevice) => {
       if (!currentDevice) {
@@ -87,20 +101,19 @@ export default function Home() {
 
       createdTransport.on('connect', ({ dtlsParameters }, callback) => {
         console.log('🔹 Connecting producer transport...')
-        console.log(`this is the mySocket : ${mySocket}`)
         mySocket?.send(
           JSON.stringify({ type: 'connectProducerTransport', dtlsParameters })
         )
 
-        // Create a one-time event listener for the response
         const messageHandler = (e: any) => {
           const response = JSON.parse(e.data)
           if (response.type === 'producerTransportConnected') {
             callback()
+            mySocket.removeEventListener('message', messageHandler) // Cleanup
           }
         }
 
-        mySocket?.addEventListener('producerTransportConnected', messageHandler)
+        mySocket.addEventListener('message', messageHandler)
       })
 
       createdTransport.on('produce', ({ kind, rtpParameters }, callback) => {
@@ -112,10 +125,16 @@ export default function Home() {
             rtpParameters,
           })
         )
-        mySocket?.addEventListener('message', (event) => {
+
+        const messageHandler = (event: any) => {
           const response = JSON.parse(event.data)
-          if (response.type === 'produced') callback(response.data.id)
-        })
+          if (response.type === 'produced') {
+            callback(response.data.id)
+            mySocket.removeEventListener('message', messageHandler) // Cleanup
+          }
+        }
+
+        mySocket.addEventListener('message', messageHandler)
       })
 
       createdTransport.on('connectionstatechange', (state) => {
@@ -124,8 +143,8 @@ export default function Home() {
             setTextPublish('Publishing...')
             break
           case 'connected':
-            if (localVideo.current) {
-              localVideo.current.srcObject = stream
+            if (localVideo.current && streamRef.current) {
+              localVideo.current.srcObject = streamRef.current
             }
             setTextPublish('Published ✅')
             break
@@ -140,10 +159,13 @@ export default function Home() {
     })
   }
 
+  /**
+   * Start publishing webcam or screen share
+   */
   const publish = async (e: any) => {
     console.log(`🔹 Publishing...`)
     const isWebcam = e.target.id === 'btn_webcam'
-    setIsWebCam(isWebcam) // Update state
+    setIsWebCam(isWebcam)
 
     if (webcamButtonRef.current) webcamButtonRef.current.disabled = true
     if (screenButtonRef.current) screenButtonRef.current.disabled = true
@@ -154,7 +176,7 @@ export default function Home() {
     }
 
     try {
-      const localStream = isWebcam // Use the local variable, not the state
+      const localStream = isWebcam
         ? await navigator.mediaDevices.getUserMedia({
             audio: true,
             video: true,
@@ -165,6 +187,7 @@ export default function Home() {
           })
 
       setStream(localStream)
+      streamRef.current = localStream
 
       socket?.send(
         JSON.stringify({
@@ -179,6 +202,9 @@ export default function Home() {
     }
   }
 
+  /**
+   * Handle stream production when stream or transport changes
+   */
   useEffect(() => {
     if (!stream || !transport) return
 
@@ -187,6 +213,7 @@ export default function Home() {
         const track = stream.getVideoTracks()[0]
         const producer = await transport.produce({ track })
         console.log('✅ Producer created:', producer)
+        await localVideo.current?.play()
       } catch (error) {
         console.error('Error producing stream:', error)
         setTextPublish('Failed ❌')

@@ -43,7 +43,7 @@ export default function Home() {
           break
 
         case 'producerTransportCreated':
-          onProducerTransportCreated(data.data)
+          onProducerTransportCreated(data.data, ws)
           break
 
         default:
@@ -72,22 +72,23 @@ export default function Home() {
     }
   }
 
-  const onProducerTransportCreated = (data: any) => {
+  const onProducerTransportCreated = (data: any, mySocket: WebSocket) => {
     setDevice((currentDevice) => {
       if (!currentDevice) {
         console.error('❌ Device is null inside onProducerTransportCreated!')
-        return null
+        return currentDevice
       }
 
       console.log('🎯 Using latest device:', currentDevice)
+
       const createdTransport = currentDevice.createSendTransport(data)
+
       setTransport(createdTransport)
 
       createdTransport.on('connect', ({ dtlsParameters }, callback) => {
-
         console.log('🔹 Connecting producer transport...')
-        
-        socket?.send(
+        console.log(`this is the mySocket : ${mySocket}`)
+        mySocket?.send(
           JSON.stringify({ type: 'connectProducerTransport', dtlsParameters })
         )
 
@@ -95,16 +96,15 @@ export default function Home() {
         const messageHandler = (e: any) => {
           const response = JSON.parse(e.data)
           if (response.type === 'producerTransportConnected') {
-            callback() // Call the callback!
-            socket?.removeEventListener('message', messageHandler)
+            callback()
           }
         }
 
-        socket?.addEventListener('message', messageHandler)
+        mySocket?.addEventListener('producerTransportConnected', messageHandler)
       })
 
       createdTransport.on('produce', ({ kind, rtpParameters }, callback) => {
-        socket?.send(
+        mySocket?.send(
           JSON.stringify({
             type: 'produce',
             transportId: createdTransport.id,
@@ -112,7 +112,7 @@ export default function Home() {
             rtpParameters,
           })
         )
-        socket?.addEventListener('message', (event) => {
+        mySocket?.addEventListener('message', (event) => {
           const response = JSON.parse(event.data)
           if (response.type === 'produced') callback(response.data.id)
         })

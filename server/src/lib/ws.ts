@@ -10,6 +10,7 @@ import type {
 
 let mediasoupRouter: Router
 let producerTransport: Transport
+let consumerTransport: Transport
 let producer: Producer
 
 const WebSocketConnection = async (io: WebSocketServer) => {
@@ -47,6 +48,13 @@ const WebSocketConnection = async (io: WebSocketServer) => {
           case 'produce':
             console.log('Processing produce')
             onProduce(socket, message, io)
+            break
+          case 'createConsumerTransport':
+            console.log('we are inside createConsumerTransport')
+            onCreateConsumerTransport(socket)
+            break
+          case 'connectConsumerTransport':
+            onConnectConsumerTransport(socket, message)
             break
           default:
             console.log('Unknown message type:', message.type)
@@ -119,6 +127,31 @@ const WebSocketConnection = async (io: WebSocketServer) => {
     }
     send(socket, 'produced', response)
     broadcast(io, 'newProducer', 'new user')
+  }
+
+  const onCreateConsumerTransport = async (socket: WebSocket) => {
+    try {
+      const result = await createWebRtcTransport(mediasoupRouter)
+      const { params, transport } = result!
+      consumerTransport = transport
+      //  ^?
+
+      send(socket, 'subTransportCreated', consumerTransport)
+    } catch (error) {
+      console.error(`some error occured when creating the consumer transport`)
+      return
+    }
+  }
+
+  const onConnectConsumerTransport = async (
+    socket: WebSocket,
+    message: {
+      type: string
+      dtlsParameters: DtlsParameters
+    }
+  ) => {
+    await consumerTransport.connect({ dtlsParameters: message.dtlsParameters })
+    send(socket, 'subConnected', 'consumer transport connected')
   }
 
   const send = (socket: WebSocket, type: string, data: any) => {

@@ -1,7 +1,12 @@
 'use client'
 
 import { RtpCapabilities } from 'mediasoup-client/lib/RtpParameters'
-import { AppData, Device, Transport } from 'mediasoup-client/lib/types'
+import {
+  AppData,
+  Device,
+  Transport,
+  TransportOptions,
+} from 'mediasoup-client/lib/types'
 import { useEffect, useState, useRef } from 'react'
 
 const wsUrl = `ws://localhost:4000/`
@@ -27,7 +32,7 @@ export default function Home() {
   const screenButtonRef = useRef<HTMLButtonElement>(null)
   const localVideo = useRef<HTMLVideoElement | null>(null)
   const remoteVideo = useRef<HTMLVideoElement | null>(null)
-
+  const subButtonRef = useRef<HTMLButtonElement | null>(null)
   // Track whether user is sharing webcam or screen
   const [isWebCam, setIsWebCam] = useState(true)
 
@@ -53,6 +58,9 @@ export default function Home() {
           break
         case 'producerTransportCreated':
           onProducerTransportCreated(data.data, ws)
+          break
+        case 'subTransportCreated':
+          onSubTransportCreated(data)
           break
         default:
           console.warn('Unknown WebSocket message type:', data.type)
@@ -81,6 +89,40 @@ export default function Home() {
     } catch (error) {
       console.error('Error creating Mediasoup device:', error)
     }
+  }
+
+  /**
+   * Create a consumer transport for recieving media
+   */
+
+  const onSubTransportCreated = (data: {
+    type: string
+    data: TransportOptions
+  }) => {
+    const transport = device?.createRecvTransport(data.data)
+    console.log(`this is the recv-transport: ${transport}`)
+
+    transport?.on('connect', ({ dtlsParameters }, callback, errback) => {
+      const msg = {
+        type: 'connectConsumerTransport',
+        transportId: transport.id,
+        dtlsParameters,
+      }
+      const message = JSON.stringify(msg)
+
+      socket?.send(message)
+      // subConnected
+
+      const messageHandler = (data: MessageEvent) => {
+        const msg = JSON.parse(data.data)
+        if (msg.type === 'subConnected') {
+          console.log(`consumer transport connected sucessfully`)
+          callback()
+          socket?.removeEventListener('message', messageHandler)
+        }
+      }
+      socket?.addEventListener('message', messageHandler)
+    })
   }
 
   /**
@@ -201,6 +243,20 @@ export default function Home() {
       setTextPublish('Failed ❌')
     }
   }
+  /**
+   * Start subscribing on button click
+   */
+
+  const subscribe = () => {
+    // disable the button
+    if (subButtonRef.current) subButtonRef.current.disabled = true
+
+    const message = {
+      type: 'createConsumerTransport',
+      forceTcp: false,
+    }
+    socket?.send(JSON.stringify(message))
+  }
 
   /**
    * Handle stream production when stream or transport changes
@@ -261,7 +317,11 @@ export default function Home() {
         >
           {textScreen}
         </button>
-        <button className="px-4 py-2 bg-purple-500 rounded-lg hover:bg-purple-600 transition">
+        <button
+          onClick={subscribe}
+          ref={subButtonRef}
+          className="px-4 py-2 bg-purple-500 rounded-lg hover:bg-purple-600 transition"
+        >
           {textSubscribe}
         </button>
       </div>

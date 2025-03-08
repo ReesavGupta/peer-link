@@ -16,7 +16,9 @@ export default function Home() {
   const [socket, setSocket] = useState<WebSocket | null>(null)
   const [device, setDevice] = useState<Device | null>(null)
   const [transport, setTransport] = useState<Transport<AppData> | null>(null)
-
+  const [consumerTransport, setConsumerTransport] = useState<
+    Transport<AppData> | undefined
+  >(undefined)
   const deviceRef = useRef<Device | null>(null)
 
   // Media stream states
@@ -68,6 +70,9 @@ export default function Home() {
         case 'resumed':
           console.log(data.data)
           break
+        case 'subscribed':
+          onSubsribed(data.data)
+          break
         default:
           console.warn('Unknown WebSocket message type:', data.type)
           break
@@ -98,6 +103,25 @@ export default function Home() {
     }
   }
 
+  const onSubsribed = async (data: any) => {
+    const { producerId, id, kind, rtpParameters } = data.data
+
+    // let codecOptions = {}
+
+    const consumer = await consumerTransport?.consume({
+      id,
+      rtpParameters,
+      kind,
+      producerId,
+      // codecOptions,
+    })
+    const stream = new MediaStream()
+    if (consumer) {
+      stream.addTrack(consumer.track)
+      setRemoteStream(stream)
+    }
+  }
+
   /**
    * Create a consumer transport for recieving media
    */
@@ -105,6 +129,7 @@ export default function Home() {
   const onSubTransportCreated = (data: { type: string; data: any }) => {
     console.log(`this is the data.data.id:`, { data })
     const transport = deviceRef.current?.createRecvTransport(data.data)
+    setConsumerTransport(transport)
     console.log(`this is the recv-transport:`, transport)
 
     transport?.on('connect', ({ dtlsParameters }, callback, errback) => {
@@ -157,10 +182,10 @@ export default function Home() {
           break
       }
     })
-    const stream = consumer(transport)
+    const stream = consumer()
   }
 
-  const consumer = async (transport) => {
+  const consumer = async () => {
     const rtpCapabilities = deviceRef.current?.rtpCapabilities
 
     const msg = {
@@ -168,6 +193,7 @@ export default function Home() {
       rtpCapabilities,
     }
     socket?.send(JSON.stringify(msg))
+    // callback here
   }
 
   /**

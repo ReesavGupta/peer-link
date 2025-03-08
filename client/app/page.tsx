@@ -17,9 +17,12 @@ export default function Home() {
   const [device, setDevice] = useState<Device | null>(null)
   const [transport, setTransport] = useState<Transport<AppData> | null>(null)
 
+  const deviceRef = useRef<Device | null>(null)
+
   // Media stream states
   const [stream, setStream] = useState<MediaStream | null>(null)
   const streamRef = useRef<MediaStream | null>(null) // Holds stream reference
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
 
   // UI states for button texts
   const [textWebcam, setTextWebcam] = useState('📷 Share Video')
@@ -62,6 +65,9 @@ export default function Home() {
         case 'subTransportCreated':
           onSubTransportCreated(data)
           break
+        case 'resumed':
+          console.log(data.data)
+          break
         default:
           console.warn('Unknown WebSocket message type:', data.type)
           break
@@ -86,6 +92,7 @@ export default function Home() {
         console.log(`✅ Loaded Mediasoup device successfully`, mediaSoupDevice)
         return mediaSoupDevice
       })
+      deviceRef.current = mediaSoupDevice
     } catch (error) {
       console.error('Error creating Mediasoup device:', error)
     }
@@ -95,14 +102,13 @@ export default function Home() {
    * Create a consumer transport for recieving media
    */
 
-  const onSubTransportCreated = (data: {
-    type: string
-    data: TransportOptions
-  }) => {
-    const transport = device?.createRecvTransport(data.data)
-    console.log(`this is the recv-transport: ${transport}`)
+  const onSubTransportCreated = (data: { type: string; data: any }) => {
+    console.log(`this is the data.data.id:`, { data })
+    const transport = deviceRef.current?.createRecvTransport(data.data)
+    console.log(`this is the recv-transport:`, transport)
 
     transport?.on('connect', ({ dtlsParameters }, callback, errback) => {
+      console.log(`we are inside connect transport`)
       const msg = {
         type: 'connectConsumerTransport',
         transportId: transport.id,
@@ -123,6 +129,45 @@ export default function Home() {
       }
       socket?.addEventListener('message', messageHandler)
     })
+
+    transport?.on('connectionstatechange', (state) => {
+      console.log(`this is the state of the transport : ${state}`)
+
+      switch (state) {
+        case 'connecting':
+          console.log(`we are getting connected...`)
+          break
+        case 'connected':
+          console.log('we are in !!! :D')
+          if (remoteVideo.current) {
+            remoteVideo.current.srcObject = remoteStream
+            socket?.send(
+              JSON.stringify({
+                type: 'resume',
+              })
+            )
+          }
+          break
+        case 'failed':
+          console.log('connection failed :(')
+          transport.close()
+          break
+        default:
+          console.warn('unpredicted state')
+          break
+      }
+    })
+    const stream = consumer(transport)
+  }
+
+  const consumer = async (transport) => {
+    const rtpCapabilities = deviceRef.current?.rtpCapabilities
+
+    const msg = {
+      type: 'consume',
+      rtpCapabilities,
+    }
+    socket?.send(JSON.stringify(msg))
   }
 
   /**

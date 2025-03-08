@@ -3,6 +3,7 @@ import { createWorker } from '../config/worker'
 import type { Router } from 'mediasoup/node/lib/RouterTypes'
 import { createWebRtcTransport } from './createWebRtcTransport'
 import type {
+  Consumer,
   DtlsParameters,
   Producer,
   Transport,
@@ -12,7 +13,7 @@ let mediasoupRouter: Router
 let producerTransport: Transport
 let consumerTransport: Transport
 let producer: Producer
-
+let consumer: Consumer
 const WebSocketConnection = async (io: WebSocketServer) => {
   try {
     mediasoupRouter = await createWorker()
@@ -55,6 +56,9 @@ const WebSocketConnection = async (io: WebSocketServer) => {
             break
           case 'connectConsumerTransport':
             onConnectConsumerTransport(socket, message)
+            break
+          case 'resume':
+            onResume(socket)
             break
           default:
             console.log('Unknown message type:', message.type)
@@ -114,6 +118,11 @@ const WebSocketConnection = async (io: WebSocketServer) => {
     }
   }
 
+  const onResume = async (socket: WebSocket) => {
+    await consumer.resume()
+    send(socket, 'resumed', 'resumed')
+  }
+
   const onProduce = async (
     socket: WebSocket,
     message: any,
@@ -134,9 +143,8 @@ const WebSocketConnection = async (io: WebSocketServer) => {
       const result = await createWebRtcTransport(mediasoupRouter)
       const { params, transport } = result!
       consumerTransport = transport
-      //  ^?
 
-      send(socket, 'subTransportCreated', consumerTransport)
+      send(socket, 'subTransportCreated', params)
     } catch (error) {
       console.error(`some error occured when creating the consumer transport`)
       return

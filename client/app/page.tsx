@@ -67,11 +67,11 @@ export default function Home() {
         case 'subTransportCreated':
           onSubTransportCreated(data)
           break
-        case 'resumed':
-          console.log(data.data)
-          break
         case 'subscribed':
           onSubsribed(data.data)
+          break
+        case 'resumed':
+          console.log(data.data)
           break
         default:
           console.warn('Unknown WebSocket message type:', data.type)
@@ -113,12 +113,19 @@ export default function Home() {
       rtpParameters,
       kind,
       producerId,
-      // codecOptions,
+      // codecOptions
     })
     const stream = new MediaStream()
     if (consumer) {
       stream.addTrack(consumer.track)
       setRemoteStream(stream)
+      socket?.send(
+        JSON.stringify({
+          type: 'resume',
+        })
+      )
+    } else {
+      console.error("couldn't create a consumer")
     }
   }
 
@@ -128,13 +135,18 @@ export default function Home() {
 
   const onSubTransportCreated = (data: { type: string; data: any }) => {
     console.log(`this is the data.data:`, data.data)
-    const transport = deviceRef.current?.createRecvTransport(data.data)
+
+    if (!deviceRef.current) return
+    const transport = deviceRef.current.createRecvTransport(data.data)
+
     setConsumerTransport(transport)
+
     console.log(`this is the recv-transport:`, transport)
+
     if (transport) {
-      console.log(`this is the connectoin state: `, transport.connectionState)
       transport.on('connect', ({ dtlsParameters }, callback, errback) => {
         console.log(`connecting the sub transport ...`)
+
         const msg = {
           type: 'connectConsumerTransport',
           transportId: transport.id,
@@ -173,11 +185,16 @@ export default function Home() {
             console.log('we are in !!! :D')
             if (remoteVideo.current) {
               remoteVideo.current.srcObject = remoteStream
-              socket?.send(
-                JSON.stringify({
-                  type: 'resume',
-                })
-              )
+
+              /*
+               *NOTE: we dont send it here anymore
+               *it's now sent right after consumer creation
+               */
+              // socket?.send(
+              //   JSON.stringify({
+              //     type: 'resume',
+              //   })
+              // )
             }
             break
           case 'failed':
@@ -189,7 +206,6 @@ export default function Home() {
             break
         }
       })
-      console.log(`this is the events after: `, transport?.eventNames())
     } else {
       console.error('no transport')
       return
@@ -204,7 +220,6 @@ export default function Home() {
       rtpCapabilities,
     }
     socket?.send(JSON.stringify(msg))
-    // callback here
   }
 
   /**

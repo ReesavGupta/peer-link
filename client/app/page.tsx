@@ -127,62 +127,73 @@ export default function Home() {
    */
 
   const onSubTransportCreated = (data: { type: string; data: any }) => {
-    console.log(`this is the data.data.id:`, { data })
+    console.log(`this is the data.data:`, data.data)
     const transport = deviceRef.current?.createRecvTransport(data.data)
     setConsumerTransport(transport)
     console.log(`this is the recv-transport:`, transport)
-
-    transport?.on('connect', ({ dtlsParameters }, callback, errback) => {
-      console.log(`we are inside connect transport`)
-      const msg = {
-        type: 'connectConsumerTransport',
-        transportId: transport.id,
-        dtlsParameters,
-      }
-      const message = JSON.stringify(msg)
-
-      socket?.send(message)
-      // subConnected
-
-      const messageHandler = (data: MessageEvent) => {
-        const msg = JSON.parse(data.data)
-        if (msg.type === 'subConnected') {
-          console.log(`consumer transport connected sucessfully`)
-          callback()
-          socket?.removeEventListener('message', messageHandler)
+    if (transport) {
+      console.log(`this is the connectoin state: `, transport.connectionState)
+      transport.on('connect', ({ dtlsParameters }, callback, errback) => {
+        console.log(`connecting the sub transport ...`)
+        const msg = {
+          type: 'connectConsumerTransport',
+          transportId: transport.id,
+          dtlsParameters,
         }
-      }
-      socket?.addEventListener('message', messageHandler)
-    })
+        const message = JSON.stringify(msg)
 
-    transport?.on('connectionstatechange', (state) => {
-      console.log(`this is the state of the transport : ${state}`)
+        socket?.send(message)
+        // subConnected
 
-      switch (state) {
-        case 'connecting':
-          console.log(`we are getting connected...`)
-          break
-        case 'connected':
-          console.log('we are in !!! :D')
-          if (remoteVideo.current) {
-            remoteVideo.current.srcObject = remoteStream
-            socket?.send(
-              JSON.stringify({
-                type: 'resume',
-              })
-            )
+        const messageHandler = (event: MessageEvent) => {
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'subConnected') {
+            console.log(`✅ Consumer transport connected successfully`)
+            callback()
+            socket?.removeEventListener('message', messageHandler)
+            // we consume only after sucessfull connection
+
+            consumer()
           }
-          break
-        case 'failed':
-          console.log('connection failed :(')
-          transport.close()
-          break
-        default:
-          console.warn('unpredicted state')
-          break
-      }
-    })
-    const stream = consumer()
+        }
+        socket?.addEventListener('message', messageHandler)
+      })
+
+      transport.on('connectionstatechange', (state) => {
+        console.log(`this is the state of the transport : ${state}`)
+
+        switch (state) {
+          case 'new':
+            console.log(`new connection instantiated :thumbsup:`)
+            break
+          case 'connecting':
+            console.log(`we are getting connected...`)
+            break
+          case 'connected':
+            console.log('we are in !!! :D')
+            if (remoteVideo.current) {
+              remoteVideo.current.srcObject = remoteStream
+              socket?.send(
+                JSON.stringify({
+                  type: 'resume',
+                })
+              )
+            }
+            break
+          case 'failed':
+            console.error('connection failed :(')
+            transport.close()
+            break
+          default:
+            console.warn('unpredicted state')
+            break
+        }
+      })
+      console.log(`this is the events after: `, transport?.eventNames())
+    } else {
+      console.error('no transport')
+      return
+    }
   }
 
   const consumer = async () => {

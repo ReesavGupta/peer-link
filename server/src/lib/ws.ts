@@ -75,23 +75,23 @@ const WebSocketConnection = async (io: WebSocketServer) => {
       }
     })
 
-    // socket.on('close', () => {
-    //   console.log('Socket disconnected, cleaning up transports...')
+    socket.on('close', () => {
+      console.log('Socket disconnected, cleaning up transports...')
 
-    //   if (producer) {
-    //     console.log('Closing producer transport...')
-    //     producerTransport?.close()
-    //     producerTransport = null
-    //     producer = null
-    //   }
+      if (producer) {
+        console.log('Closing producer transport...')
+        producerTransport?.close()
+        producerTransport = null
+        producer = null
+      }
 
-    //   if (consumer) {
-    //     console.log('Closing consumer transport...')
-    //     consumerTransport?.close()
-    //     consumerTransport = null
-    //     consumer = null
-    //   }
-    // })
+      if (consumer) {
+        console.log('Closing consumer transport...')
+        consumerTransport?.close()
+        consumerTransport = null
+        consumer = null
+      }
+    })
   })
 }
 

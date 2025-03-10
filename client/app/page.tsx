@@ -14,18 +14,21 @@ const wsUrl = `ws://localhost:4000/`
 export default function Home() {
   // WebSocket and Mediasoup device states
   const [socket, setSocket] = useState<WebSocket | null>(null)
+  const socketRef = useRef<WebSocket | null>(null)
   const [device, setDevice] = useState<Device | null>(null)
   const [transport, setTransport] = useState<Transport<AppData> | null>(null)
   const [consumerTransport, setConsumerTransport] = useState<
     Transport<AppData> | undefined
   >(undefined)
+  const consumerTransportRef = useRef<Transport | null>(null)
+
   const deviceRef = useRef<Device | null>(null)
 
   // Media stream states
   const [stream, setStream] = useState<MediaStream | null>(null)
   const streamRef = useRef<MediaStream | null>(null) // Holds stream reference
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
-
+  const remoteStreamRef = useRef<MediaStream | null>(null)
   // UI states for button texts
   const [textWebcam, setTextWebcam] = useState('📷 Share Video')
   const [textScreen, setTextScreen] = useState('🖥️ Share Screen')
@@ -50,6 +53,7 @@ export default function Home() {
     ws.onopen = () => {
       console.log(`Connected to WebSocket Server`)
       setSocket(ws)
+      socketRef.current = ws
       ws.send(JSON.stringify({ type: `getRouterRtpCapabilities` }))
     }
 
@@ -72,6 +76,9 @@ export default function Home() {
           break
         case 'resumed':
           console.log(data.data)
+          break
+        case 'error':
+          console.error(data.data)
           break
         default:
           console.warn('Unknown WebSocket message type:', data.type)
@@ -104,11 +111,19 @@ export default function Home() {
   }
 
   const onSubsribed = async (data: any) => {
-    const { producerId, id, kind, rtpParameters } = data.data
+    console.log(`this is the data inside onSubscribed: `, data)
+    const { producerId, id, kind, rtpParameters } = data
 
     // let codecOptions = {}
 
-    const consumer = await consumerTransport?.consume({
+    if (!consumerTransportRef.current) {
+      console.log(
+        `this is the consumerTransportRef.current: `,
+        consumerTransportRef.current
+      )
+      return
+    }
+    const consumer = await consumerTransportRef.current.consume({
       id,
       rtpParameters,
       kind,
@@ -118,8 +133,14 @@ export default function Home() {
     const stream = new MediaStream()
     if (consumer) {
       stream.addTrack(consumer.track)
+      remoteStreamRef.current = stream
       setRemoteStream(stream)
-      socket?.send(
+      console.log('this is the remote stream inside onSubscribed:', stream)
+      if (!socketRef.current) {
+        console.log(`this is the socket inside consumer: `, socket)
+        return
+      }
+      socketRef.current.send(
         JSON.stringify({
           type: 'resume',
         })
@@ -140,8 +161,11 @@ export default function Home() {
     const transport = deviceRef.current.createRecvTransport(data.data)
 
     setConsumerTransport(transport)
+    consumerTransportRef.current = transport
 
     console.log(`this is the recv-transport:`, transport)
+
+    consumer()
 
     if (transport) {
       transport.on('connect', ({ dtlsParameters }, callback, errback) => {
@@ -152,9 +176,13 @@ export default function Home() {
           transportId: transport.id,
           dtlsParameters,
         }
-        const message = JSON.stringify(msg)
 
-        socket?.send(message)
+        const message = JSON.stringify(msg)
+        if (!socketRef.current) {
+          console.log(`this is socket inside on connect:`, socket)
+          return
+        }
+        socketRef.current.send(message)
         // subConnected
 
         const messageHandler = (event: MessageEvent) => {
@@ -162,16 +190,16 @@ export default function Home() {
           if (msg.type === 'subConnected') {
             console.log(`✅ Consumer transport connected successfully`)
             callback()
-            socket?.removeEventListener('message', messageHandler)
+            if (socketRef.current) {
+              socketRef.current.removeEventListener('message', messageHandler)
+            }
             // we consume only after sucessfull connection
-
-            consumer()
           }
         }
-        socket?.addEventListener('message', messageHandler)
+        socketRef.current.addEventListener('message', messageHandler)
       })
 
-      transport.on('connectionstatechange', (state) => {
+      transport.on('connectionstatechange', async (state) => {
         console.log(`this is the state of the transport : ${state}`)
 
         switch (state) {
@@ -184,7 +212,12 @@ export default function Home() {
           case 'connected':
             console.log('we are in !!! :D')
             if (remoteVideo.current) {
-              remoteVideo.current.srcObject = remoteStream
+              console.log(
+                `this is the remote stream: `,
+                remoteStreamRef.current
+              )
+              remoteVideo.current.srcObject = remoteStreamRef.current
+              await remoteVideo.current.play()
 
               /*
                *NOTE: we dont send it here anymore
@@ -213,13 +246,19 @@ export default function Home() {
   }
 
   const consumer = async () => {
+    console.log(`we are inside consumer`)
     const rtpCapabilities = deviceRef.current?.rtpCapabilities
 
     const msg = {
       type: 'consume',
       rtpCapabilities,
     }
-    socket?.send(JSON.stringify(msg))
+    console.log(`this is socket inside consumer:`, socketRef.current)
+    if (!socketRef.current) {
+      console.log(`there was no socket found`)
+      return
+    }
+    socketRef.current.send(JSON.stringify(msg))
   }
 
   /**

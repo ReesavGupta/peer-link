@@ -58,6 +58,7 @@ const WebSocketConnection = async (io: WebSocketServer) => {
             break
 
           case 'consume':
+            console.log(`\n we are in consume switch\n`)
             await onConsume(socket, message)
             break
 
@@ -74,15 +75,23 @@ const WebSocketConnection = async (io: WebSocketServer) => {
       }
     })
 
-    socket.on('close', () => {
-      console.log('Socket disconnected, cleaning up transports...')
-      producerTransport?.close()
-      consumerTransport?.close()
-      producerTransport = null
-      consumerTransport = null
-      producer = null
-      consumer = null
-    })
+    // socket.on('close', () => {
+    //   console.log('Socket disconnected, cleaning up transports...')
+
+    //   if (producer) {
+    //     console.log('Closing producer transport...')
+    //     producerTransport?.close()
+    //     producerTransport = null
+    //     producer = null
+    //   }
+
+    //   if (consumer) {
+    //     console.log('Closing consumer transport...')
+    //     consumerTransport?.close()
+    //     consumerTransport = null
+    //     consumer = null
+    //   }
+    // })
   })
 }
 
@@ -181,6 +190,7 @@ const onConsume = async (
   message: { rtpCapabilities: RtpCapabilities }
 ) => {
   try {
+    console.log(`\n we are inside the on consume methods \n`)
     if (!producer) {
       console.error('No producer available to consume')
       return send(socket, 'error', { message: 'No producer available' })

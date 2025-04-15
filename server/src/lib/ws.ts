@@ -3,14 +3,19 @@ import { createWorker } from '../config/worker'
 import type { Router } from 'mediasoup/node/lib/RouterTypes'
 import { createWebRtcTransport } from './createWebRtcTransport'
 import type {
+  AppData,
   Consumer,
   DtlsParameters,
   MediaKind,
+  PlainTransport,
   Producer,
   RtpCapabilities,
   Transport,
 } from 'mediasoup/node/lib/types'
-
+import path from 'path'
+import fs from 'fs'
+import { setupRecordingForProducer } from './recordingForProducer'
+import type { ChildProcessWithoutNullStreams } from 'child_process'
 let mediasoupRouter: Router
 let producerTransport: Transport | null = null
 let consumerTransport: Transport | null = null
@@ -18,6 +23,34 @@ let producer: Producer | null = null
 let consumer: Consumer | null = null
 
 const WebSocketConnection = async (io: WebSocketServer) => {
+  process.on('SIGINT', async () => {
+    console.log('Received SIGINT, cleaning up...')
+
+    // Clean up all recordings
+    if (producer && producer.appData.recording) {
+      const recording = producer.appData.recording as {
+        plainTransport: PlainTransport<AppData>
+        consumer: Consumer<AppData>
+        ffmpeg: ChildProcessWithoutNullStreams
+        outputPath: string
+      } | null
+
+      if (recording) {
+        const { ffmpeg } = recording
+        console.log('Stopping FFmpeg process...')
+
+        // Send SIGTERM to FFmpeg to let it finalize the file
+        ffmpeg.kill('SIGTERM')
+
+        // Give FFmpeg a moment to properly close the file
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+      }
+
+      console.log('Cleanup complete, exiting')
+      process.exit(0)
+    }
+  })
+
   try {
     mediasoupRouter = await createWorker()
   } catch (error) {
@@ -27,6 +60,21 @@ const WebSocketConnection = async (io: WebSocketServer) => {
 
   io.on('connection', (socket) => {
     console.log('New WebSocket connection')
+
+    const recordingsDir = path.resolve(__dirname, '../../public/recordings')
+
+    if (!fs.existsSync(recordingsDir)) {
+      try {
+        fs.mkdirSync(recordingsDir, { recursive: true })
+        console.log(`Created recordings directory at ${recordingsDir}`)
+      } catch (err) {
+        console.error(
+          `Failed to create recordings directory: ${(err as any).message}`
+        )
+        // If we can't create the directory, we should return early
+        return null
+      }
+    }
 
     socket.on('message', async (data) => {
       try {
@@ -138,15 +186,37 @@ const onProduce = async (
     if (!producerTransport)
       throw new Error('Producer transport is not connected')
 
-    console.log(
-      'Producing with RTP Parameters:',
-      JSON.stringify(message.rtpParameters, null, 2)
-    )
+    // console.log(
+    //   'Producing with RTP Parameters:',
+    //   JSON.stringify(message.rtpParameters, null, 2)
+    // )
 
     producer = await producerTransport.produce({
       kind: message.kind as MediaKind,
       rtpParameters: message.rtpParameters,
     })
+    // console.log(`\n\n\n\nthis is the producer: `, producer, '\n\n\n\n')
+    console.log(`\n\n\n\nthis is the message.kind: `, message.kind, '\n\n\n\n')
+
+    // Inside your onProduce function
+    if (message.kind === 'audio') {
+      console.log('Audio producer created, setting up recording...')
+      try {
+        const recording = await setupRecordingForProducer()
+        if (recording) {
+          console.log(
+            `Recording started successfully to ${recording.outputPath}`
+          )
+          producer.appData.recording = recording
+        } else {
+          console.error(
+            'Failed to set up recording - setup function returned null'
+          )
+        }
+      } catch (error) {
+        console.error('Error setting up recording:', error)
+      }
+    }
 
     send(socket, 'produced', { id: producer.id })
     broadcast(io, 'newProducer', producer.id)
@@ -250,4 +320,4 @@ const broadcast = (ws: WebSocketServer, type: string, message: any) => {
   ws.clients.forEach((client) => client.send(resp))
 }
 
-export { WebSocketConnection }
+export { WebSocketConnection, mediasoupRouter, producer }

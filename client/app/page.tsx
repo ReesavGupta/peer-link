@@ -398,9 +398,12 @@ export default function Home() {
 
     const publishStream = async () => {
       try {
-        const track = stream.getVideoTracks()[0]
-        const producer = await transport.produce({ track })
-        console.log('✅ Producer created:', producer)
+        const videoTrack = stream.getVideoTracks()[0]
+        const audioTrack = stream.getAudioTracks()[0]
+        const videoProducer = await transport.produce({ track: videoTrack })
+        const audioProducer = await transport.produce({ track: audioTrack })
+        console.log('✅ Video Producer created:', videoProducer)
+        console.log('✅ audio Producer created:', audioProducer)
         await localVideo.current?.play()
       } catch (error) {
         console.error('Error producing stream:', error)

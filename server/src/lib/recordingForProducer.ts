@@ -49,24 +49,65 @@ function getCodecInfoFromRtpParameters(
 }
 
 // Create SDP text (similar to sdp.js in the demo)
-function createSdpText(producer: Producer, plainTransport: PlainTransport) {
-  const { localIp, localPort } = plainTransport.tuple
+function createSdpText(
+  producer: Producer,
+  plainTransport: PlainTransport,
+  ffmpegPort: number
+) {
+  const { localIp } = plainTransport.tuple
 
-  // Audio codec info
+  // Use a specific port for FFmpeg to receive on, different from the MediaSoup port
+  const rtpPort = ffmpegPort
+
+  // Get the actual payload type from the producer's parameters
   const audioCodecInfo = getCodecInfoFromRtpParameters(
     'audio',
     producer.rtpParameters
   )
 
+  console.log(
+    'Producer RTP parameters:',
+    JSON.stringify(producer.rtpParameters, null, 2)
+  )
+  console.log('Using audio codec:', JSON.stringify(audioCodecInfo, null, 2))
+
   // Create SDP for audio only
   return `v=0
-o=- 0 0 IN IP4 127.0.0.1
+o=- 0 0 IN IP4 0.0.0.0
 s=MediaSoup Recording
-c=IN IP4 127.0.0.1
+c=IN IP4 ${localIp}
 t=0 0
-m=audio ${localPort} RTP/AVP ${audioCodecInfo.payloadType}
+m=audio ${rtpPort} RTP/AVP ${audioCodecInfo.payloadType}
 a=rtpmap:${audioCodecInfo.payloadType} ${audioCodecInfo.codecName}/${audioCodecInfo.clockRate}/${audioCodecInfo.channels}
 a=recvonly`
+}
+
+// Function to find an available UDP port
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const dgram = require('dgram')
+    const server = dgram.createSocket('udp4')
+
+    server.on('error', () => {
+      resolve(false)
+      server.close()
+    })
+
+    server.bind(port, () => {
+      server.close()
+      resolve(true)
+    })
+  })
+}
+
+// Find an available port in a range
+async function findAvailablePort(start: number, end: number): Promise<number> {
+  for (let port = start; port <= end; port++) {
+    if (await isPortAvailable(port)) {
+      return port
+    }
+  }
+  throw new Error(`No available ports in range ${start}-${end}`)
 }
 
 export async function setupRecordingForProducer() {
@@ -75,126 +116,171 @@ export async function setupRecordingForProducer() {
     return null
   }
 
-  // Create a plain transport for FFmpeg to receive from
-  const plainTransport = await mediasoupRouter.createPlainTransport({
-    listenIp: { ip: '0.0.0.0', announcedIp: '127.0.0.1' },
-    rtcpMux: true,
-    comedia: false,
-  })
+  // Create a unique ID for this recording session
+  const sessionId = Date.now()
 
-  const { localIp, localPort } = plainTransport.tuple
-  console.log(`Created plain transport with local RTP port: ${localPort}`)
+  try {
+    // Find an available port for FFmpeg to receive RTP packets on
+    const ffmpegPort = await findAvailablePort(50000, 50100)
+    console.log(`Found available port for FFmpeg: ${ffmpegPort}`)
 
-  // Create an SDP file for FFmpeg
-  const sdpContent = createSdpText(producer, plainTransport)
-  console.log('Generated SDP:', sdpContent)
+    // Create a plain transport for MediaSoup
+    const plainTransport = await mediasoupRouter.createPlainTransport({
+      listenIp: { ip: '0.0.0.0', announcedIp: '127.0.0.1' },
+      rtcpMux: true, // Enable RTCP multiplexing to simplify setup
+    })
 
-  // Create a consumer to pipe the producer's audio to our plainTransport
-  const consumer = await plainTransport.consume({
-    producerId: producer.id,
-    rtpCapabilities: mediasoupRouter.rtpCapabilities,
-    paused: false,
-  })
+    console.log(`Created plain transport: ${plainTransport.id}`)
 
-  // Connect the plain transport to where FFmpeg will be sending RTP
-  // We're not actually using this connection since FFmpeg is receiving only
-  await plainTransport.connect({
-    ip: '127.0.0.1',
-    port: localPort,
-  })
+    // Create a consumer to pipe the producer's audio to our plainTransport
+    const consumer = await plainTransport.consume({
+      producerId: producer.id,
+      rtpCapabilities: mediasoupRouter.rtpCapabilities,
+      paused: false,
+    })
 
-  // Setup directories and files
-  const outputDir = path.resolve(__dirname, '../../public/recordings')
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true })
-  }
+    console.log(
+      'Consumer created with RTP parameters:',
+      JSON.stringify(consumer.rtpParameters, null, 2)
+    )
 
-  // Create a unique filename
-  const timestamp = Date.now()
-  const outputPath = path.join(outputDir, `recording_${timestamp}.mp3`)
-  const sdpFilePath = path.join(os.tmpdir(), `recording_${timestamp}.sdp`)
+    // Connect the plainTransport to send RTP to the FFmpeg port
+    await plainTransport.connect({
+      ip: '127.0.0.1',
+      port: ffmpegPort,
+    })
 
-  // Write SDP to file
-  fs.writeFileSync(sdpFilePath, sdpContent)
-  console.log(`SDP file written to ${sdpFilePath}`)
+    console.log(
+      `Connected plain transport to send RTP to 127.0.0.1:${ffmpegPort}`
+    )
 
-  // Wait for the transport to be ready
-  await new Promise((resolve) => setTimeout(resolve, 1000))
+    // Create an SDP file for FFmpeg using our selected port and the ACTUAL consumer payload type
+    const consumerCodecInfo = getCodecInfoFromRtpParameters(
+      'audio',
+      consumer.rtpParameters
+    )
 
-  // FFmpeg command
-  const ffmpeg = spawn('ffmpeg', [
-    '-loglevel',
-    'debug',
-    '-protocol_whitelist',
-    'file,udp,rtp',
-    '-i',
-    sdpFilePath,
-    '-acodec',
-    'libmp3lame',
-    '-b:a',
-    '128k',
-    '-ar',
-    '48000',
-    '-ac',
-    '2',
-    '-y',
-    outputPath,
-  ])
+    // Override the producer's payload type with the consumer's payload type
+    // This ensures the SDP matches what's actually being sent
+    producer.rtpParameters.codecs[0].payloadType = consumerCodecInfo.payloadType
 
-  // Set a timeout
-  const ffmpegTimeout = setTimeout(() => {
-    console.log('FFmpeg timeout reached, stopping recording')
-    ffmpeg.kill('SIGINT')
-  }, 10 * 60 * 1000) // 10 minutes
+    const sdpContent = createSdpText(producer, plainTransport, ffmpegPort)
+    console.log('Generated SDP:', sdpContent)
 
-  ffmpeg.stderr.on('data', (data) => {
-    console.error(`FFmpeg stderr: ${data.toString()}`)
-  })
-
-  ffmpeg.stdout.on('data', (data) => {
-    console.log(`FFmpeg stdout: ${data.toString()}`)
-  })
-
-  ffmpeg.on('error', (error) => {
-    console.error('FFmpeg process error:', error)
-    clearTimeout(ffmpegTimeout)
-  })
-
-  ffmpeg.on('exit', (code, signal) => {
-    clearTimeout(ffmpegTimeout)
-    console.log(`FFmpeg exited with code ${code}, signal ${signal}`)
-
-    // Clean up
-    if (fs.existsSync(sdpFilePath)) {
-      fs.unlinkSync(sdpFilePath)
+    // Setup directories and files
+    const outputDir = path.resolve(__dirname, '../../public/recordings')
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true })
     }
 
-    // Check if recording was successful
-    if (fs.existsSync(outputPath)) {
-      const stats = fs.statSync(outputPath)
-      console.log(`Output file size: ${stats.size} bytes`)
-      if (stats.size === 0) {
-        console.error('Output file is empty, recording failed')
-        fs.unlinkSync(outputPath)
-      } else {
-        console.log(`Recording saved to ${outputPath}`)
-      }
-    } else {
-      console.error('Output file was not created')
-    }
-  })
+    // Create a unique filename
+    const outputPath = path.join(outputDir, `recording_${sessionId}.mp3`)
+    const sdpFilePath = path.join(os.tmpdir(), `recording_${sessionId}.sdp`)
 
-  console.log(`Recording started for producer ${producer.id}`)
+    // Write SDP to file
+    fs.writeFileSync(sdpFilePath, sdpContent)
+    console.log(`SDP file written to ${sdpFilePath}`)
 
-  return {
-    plainTransport,
-    consumer,
-    ffmpeg,
-    outputPath,
-    cleanup: () => {
-      clearTimeout(ffmpegTimeout)
+    // Give a short delay to ensure everything is setup
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+
+    // FFmpeg command - using the SDP file instead of direct RTP parameters
+    // This is more reliable as it includes all the codec details
+    const ffmpeg = spawn('ffmpeg', [
+      '-loglevel',
+      'debug',
+      '-protocol_whitelist',
+      'file,udp,rtp',
+      '-i',
+      sdpFilePath, // Use the SDP file instead of direct RTP connection
+      '-acodec',
+      'libmp3lame',
+      '-b:a',
+      '128k',
+      '-ar',
+      '48000',
+      '-ac',
+      '2',
+      '-y',
+      outputPath,
+    ])
+
+    // Set a timeout
+    const ffmpegTimeout = setTimeout(() => {
+      console.log('FFmpeg timeout reached, stopping recording')
       ffmpeg.kill('SIGINT')
-      if (plainTransport) plainTransport.close()
-    },
+    }, 10 * 60 * 1000) // 10 minutes
+
+    ffmpeg.stderr.on('data', (data) => {
+      const message = data.toString()
+      console.error(`FFmpeg stderr: ${message}`)
+
+      // If we see a connection error, we can log more details
+      if (message.includes('bind failed') || message.includes('Error number')) {
+        console.error(
+          'FFmpeg connection error detected. Make sure no other process is using port:',
+          ffmpegPort
+        )
+      }
+    })
+
+    ffmpeg.stdout.on('data', (data) => {
+      console.log(`FFmpeg stdout: ${data.toString()}`)
+    })
+
+    ffmpeg.on('error', (error) => {
+      console.error('FFmpeg process error:', error)
+      clearTimeout(ffmpegTimeout)
+    })
+
+    ffmpeg.on('exit', (code, signal) => {
+      clearTimeout(ffmpegTimeout)
+      console.log(`FFmpeg exited with code ${code}, signal ${signal}`)
+
+      // Clean up
+      try {
+        if (fs.existsSync(sdpFilePath)) {
+          fs.unlinkSync(sdpFilePath)
+        }
+
+        // Check if recording was successful
+        if (fs.existsSync(outputPath)) {
+          const stats = fs.statSync(outputPath)
+          console.log(`Output file size: ${stats.size} bytes`)
+          if (stats.size === 0) {
+            console.error('Output file is empty, recording failed')
+            fs.unlinkSync(outputPath)
+          } else {
+            console.log(`Recording saved to ${outputPath}`)
+          }
+        } else {
+          console.error('Output file was not created')
+        }
+      } catch (err) {
+        console.error('Cleanup error:', err)
+      }
+
+      // Close the transport and consumer if they haven't been closed yet
+      if (plainTransport && !plainTransport.closed) {
+        plainTransport.close()
+      }
+    })
+
+    console.log(`Recording started for producer ${producer.id}`)
+
+    return {
+      plainTransport,
+      consumer,
+      ffmpeg,
+      outputPath,
+      cleanup: () => {
+        clearTimeout(ffmpegTimeout)
+        ffmpeg.kill('SIGINT')
+        if (plainTransport && !plainTransport.closed) plainTransport.close()
+      },
+    }
+  } catch (error) {
+    console.error('Error setting up recording:', error)
+    return null
   }
 }

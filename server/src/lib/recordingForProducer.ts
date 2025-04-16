@@ -9,7 +9,6 @@ import type {
 } from 'mediasoup/node/lib/rtpParametersTypes'
 import type { PlainTransport, Producer } from 'mediasoup/node/lib/types'
 
-// Utility function to get codec info (similar to what's in utils.js in the demo)
 function getCodecInfoFromRtpParameters(
   kind: MediaKind,
   rtpParameters: RtpParameters
@@ -48,7 +47,6 @@ function getCodecInfoFromRtpParameters(
   return codecInfo
 }
 
-// Create SDP text (similar to sdp.js in the demo)
 function createSdpText(
   producer: Producer,
   plainTransport: PlainTransport,

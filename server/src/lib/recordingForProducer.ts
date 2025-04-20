@@ -2,12 +2,107 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { spawn } from 'child_process'
+import type { ChildProcessWithoutNullStreams } from 'child_process'
 import { mediasoupRouter, producer } from './ws'
 import type {
   MediaKind,
   RtpParameters,
 } from 'mediasoup/node/lib/rtpParametersTypes'
-import type { PlainTransport, Producer } from 'mediasoup/node/lib/types'
+import type {
+  PlainTransport,
+  Producer,
+  Consumer,
+} from 'mediasoup/node/lib/types'
+
+// Enhanced port management system
+const usedPorts = new Map<
+  number,
+  { inUse: boolean; releaseTimer?: NodeJS.Timeout }
+>()
+const PORT_RANGE_START = 50000
+const PORT_RANGE_END = 51000
+const PORT_RELEASE_DELAY = 2000 // ms to wait before reusing a port
+
+// Track active recordings by producer ID
+const activeRecordings = new Map<
+  string,
+  {
+    plainTransport: PlainTransport
+    consumer: Consumer
+    ffmpeg: ChildProcessWithoutNullStreams
+    outputPath: string
+    port: number
+    cleanup: () => void
+  }
+>()
+
+// Check if a port is available at the OS level
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const dgram = require('dgram')
+    const server = dgram.createSocket('udp4')
+
+    server.on('error', () => {
+      resolve(false)
+      server.close()
+    })
+
+    // Use a timeout to prevent hanging
+    const timeout = setTimeout(() => {
+      resolve(false)
+      try {
+        server.close()
+      } catch (e) {}
+    }, 500)
+
+    server.bind(port, () => {
+      clearTimeout(timeout)
+      server.close()
+      resolve(true)
+    })
+  })
+}
+
+// Function to find an available UDP port with better validation
+async function findAvailablePort(start: number, end: number): Promise<number> {
+  for (let port = start; port <= end; port++) {
+    // Skip if port is already marked as in use
+    if (usedPorts.get(port)?.inUse) continue
+
+    // Check if port is available at OS level
+    if (await isPortAvailable(port)) {
+      // Mark port as in use before returning
+      usedPorts.set(port, { inUse: true })
+      console.log(`Reserved port ${port} for recording`)
+      return port
+    }
+  }
+  throw new Error(`No available ports in range ${start}-${end}`)
+}
+
+// Release a port with proper cleanup
+function releasePort(port: number) {
+  const portInfo = usedPorts.get(port)
+  if (!portInfo) return
+
+  // Clear any existing release timer
+  if (portInfo.releaseTimer) {
+    clearTimeout(portInfo.releaseTimer)
+  }
+
+  // Set a new release timer
+  const releaseTimer = setTimeout(() => {
+    usedPorts.delete(port)
+    console.log(`Released port ${port}`)
+  }, PORT_RELEASE_DELAY)
+
+  // Mark port as preparing for release
+  usedPorts.set(port, {
+    inUse: true,
+    releaseTimer: releaseTimer as NodeJS.Timeout,
+  })
+  console.log(`Marked port ${port} for release`)
+}
 
 function getCodecInfoFromRtpParameters(
   kind: MediaKind,
@@ -80,59 +175,134 @@ a=rtpmap:${audioCodecInfo.payloadType} ${audioCodecInfo.codecName}/${audioCodecI
 a=recvonly`
 }
 
-// Function to find an available UDP port
-function isPortAvailable(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const dgram = require('dgram')
-    const server = dgram.createSocket('udp4')
+// Improved FFmpeg spawning with better error handling
+function spawnFFmpeg(sdpFilePath: string, outputPath: string, port: number) {
+  console.log(`Starting FFmpeg process to record from port ${port}`)
 
-    server.on('error', () => {
-      resolve(false)
-      server.close()
-    })
+  const ffmpeg = spawn('ffmpeg', [
+    '-loglevel',
+    'debug',
+    '-protocol_whitelist',
+    'file,udp,rtp',
+    '-i',
+    sdpFilePath,
+    '-acodec',
+    'libmp3lame',
+    '-b:a',
+    '128k',
+    '-ar',
+    '48000',
+    '-ac',
+    '2',
+    '-y',
+    outputPath,
+  ])
 
-    server.bind(port, () => {
-      server.close()
-      resolve(true)
-    })
-  })
-}
-
-// Find an available port in a range
-async function findAvailablePort(start: number, end: number): Promise<number> {
-  for (let port = start; port <= end; port++) {
-    if (await isPortAvailable(port)) {
-      return port
+  // Improved error handling
+  let startupCompleted = false
+  const startupTimeout = setTimeout(() => {
+    if (!startupCompleted) {
+      console.error('FFmpeg startup timeout, process might be hanging')
+      ffmpeg.kill('SIGKILL')
     }
-  }
-  throw new Error(`No available ports in range ${start}-${end}`)
+  }, 10000) // 10 seconds startup timeout
+
+  ffmpeg.stderr.on('data', (data) => {
+    const message = data.toString()
+
+    // Check for successful startup indicators
+    if (message.includes('Output #0') || message.includes('encoder setup')) {
+      startupCompleted = true
+      clearTimeout(startupTimeout)
+    }
+
+    // Check for binding errors
+    if (message.includes('bind failed') || message.includes('Error number')) {
+      console.error(`FFmpeg port ${port} binding error: ${message}`)
+      // Consider this a fatal error
+      ffmpeg.kill('SIGKILL')
+    }
+
+    // Log only if debug enabled or error
+    if (
+      message.includes('Error') ||
+      message.includes('error') ||
+      process.env.DEBUG
+    ) {
+      console.error(`FFmpeg stderr: ${message}`)
+    }
+  })
+
+  // Handle process termination
+  ffmpeg.on('exit', (code, signal) => {
+    clearTimeout(startupTimeout)
+    console.log(`FFmpeg exited with code ${code}, signal ${signal}`)
+  })
+
+  return ffmpeg
 }
 
-export async function setupRecordingForProducer() {
-  if (!producer) {
+export async function setupRecordingForProducer(specifiedProducer?: Producer) {
+  // Use the specified producer or the global one
+  const targetProducer = specifiedProducer || producer
+
+  if (!targetProducer) {
     console.error('No producer available for recording.')
     return null
   }
 
+  // Check if this producer is already being recorded
+  if (activeRecordings.has(targetProducer.id)) {
+    console.log(`Producer ${targetProducer.id} is already being recorded`)
+    return activeRecordings.get(targetProducer.id)
+  }
+
   // Create a unique ID for this recording session
-  const sessionId = Date.now()
+  const sessionId = `${targetProducer.id}_${Date.now()}_${Math.floor(
+    Math.random() * 1000
+  )}`
 
   try {
-    // Find an available port for FFmpeg to receive RTP packets on
-    const ffmpegPort = await findAvailablePort(50000, 50100)
-    console.log(`Found available port for FFmpeg: ${ffmpegPort}`)
+    // Try multiple ports if necessary
+    let ffmpegPort: number | undefined
+    let attempts = 0
+    const maxAttempts = 5
 
+    while (attempts < maxAttempts) {
+      try {
+        ffmpegPort = await findAvailablePort(PORT_RANGE_START, PORT_RANGE_END)
+        console.log(`this is the available port : ${ffmpegPort}`)
+        break // If we get here, we found a port
+      } catch (err) {
+        attempts++
+        console.warn(
+          `Port finding attempt ${attempts} failed: ${(err as any).message}`
+        )
+        if (attempts >= maxAttempts) throw err
+        await new Promise((r) => setTimeout(r, 200)) // Short delay before retry
+      }
+    }
+    // console.log(`Found available port for FFmpeg: ${ffmpegPort}`)
+    // @ts-ignore
+    if (ffmpegPort !== undefined) {
+      console.log(`Found available port for FFmpeg: ${ffmpegPort}`)
+    }
     // Create a plain transport for MediaSoup
+    const plainTransportPort = await findAvailablePort(
+      PORT_RANGE_START,
+      PORT_RANGE_END
+    )
     const plainTransport = await mediasoupRouter.createPlainTransport({
-      listenIp: { ip: '0.0.0.0', announcedIp: '127.0.0.1' },
+      listenIp: { ip: '127.0.0.1', announcedIp: '127.0.0.1' },
       rtcpMux: true, // Enable RTCP multiplexing to simplify setup
+      port: plainTransportPort,
     })
 
     console.log(`Created plain transport: ${plainTransport.id}`)
 
     // Create a consumer to pipe the producer's audio to our plainTransport
     const consumer = await plainTransport.consume({
-      producerId: producer.id,
+      producerId: targetProducer.id,
       rtpCapabilities: mediasoupRouter.rtpCapabilities,
       paused: false,
     })
@@ -145,7 +315,7 @@ export async function setupRecordingForProducer() {
     // Connect the plainTransport to send RTP to the FFmpeg port
     await plainTransport.connect({
       ip: '127.0.0.1',
-      port: ffmpegPort,
+      port: ffmpegPort ?? -1, // Use a default value or handle undefined
     })
 
     console.log(
@@ -160,9 +330,21 @@ export async function setupRecordingForProducer() {
 
     // Override the producer's payload type with the consumer's payload type
     // This ensures the SDP matches what's actually being sent
-    producer.rtpParameters.codecs[0].payloadType = consumerCodecInfo.payloadType
+    const producerCopy = {
+      ...targetProducer,
+      rtpParameters: { ...targetProducer.rtpParameters },
+    }
+    producerCopy.rtpParameters.codecs = [...targetProducer.rtpParameters.codecs] // Deep copy the codecs array
+    producerCopy.rtpParameters.codecs[0] = {
+      ...producerCopy.rtpParameters.codecs[0],
+      payloadType: consumerCodecInfo.payloadType,
+    }
 
-    const sdpContent = createSdpText(producer, plainTransport, ffmpegPort)
+    const sdpContent = createSdpText(
+      producerCopy as Producer,
+      plainTransport,
+      ffmpegPort!
+    )
     console.log('Generated SDP:', sdpContent)
 
     // Setup directories and files
@@ -182,103 +364,89 @@ export async function setupRecordingForProducer() {
     // Give a short delay to ensure everything is setup
     await new Promise((resolve) => setTimeout(resolve, 1000))
 
-    // FFmpeg command - using the SDP file instead of direct RTP parameters
-    // This is more reliable as it includes all the codec details
-    const ffmpeg = spawn('ffmpeg', [
-      '-loglevel',
-      'debug',
-      '-protocol_whitelist',
-      'file,udp,rtp',
-      '-i',
-      sdpFilePath, // Use the SDP file instead of direct RTP connection
-      '-acodec',
-      'libmp3lame',
-      '-b:a',
-      '128k',
-      '-ar',
-      '48000',
-      '-ac',
-      '2',
-      '-y',
-      outputPath,
-    ])
+    // Start FFmpeg with enhanced error handling
+    const ffmpeg = spawnFFmpeg(sdpFilePath, outputPath, ffmpegPort!)
 
-    // Set a timeout
+    // Set a timeout for the recording
     const ffmpegTimeout = setTimeout(() => {
       console.log('FFmpeg timeout reached, stopping recording')
       ffmpeg.kill('SIGINT')
     }, 10 * 60 * 1000) // 10 minutes
 
-    ffmpeg.stderr.on('data', (data) => {
-      const message = data.toString()
-      console.error(`FFmpeg stderr: ${message}`)
+    // Setup cleanup function
+    const cleanup = () => {
+      clearTimeout(ffmpegTimeout)
+      ffmpeg.kill('SIGINT')
 
-      // If we see a connection error, we can log more details
-      if (message.includes('bind failed') || message.includes('Error number')) {
-        console.error(
-          'FFmpeg connection error detected. Make sure no other process is using port:',
-          ffmpegPort
-        )
+      // Remove from active recordings
+      activeRecordings.delete(targetProducer.id)
+
+      // Close transport if not already closed
+      if (plainTransport && !plainTransport.closed) {
+        plainTransport.close()
       }
-    })
 
-    ffmpeg.stdout.on('data', (data) => {
-      console.log(`FFmpeg stdout: ${data.toString()}`)
-    })
+      // Release the port
+      releasePort(ffmpegPort!)
 
-    ffmpeg.on('error', (error) => {
-      console.error('FFmpeg process error:', error)
-      clearTimeout(ffmpegTimeout)
-    })
-
-    ffmpeg.on('exit', (code, signal) => {
-      clearTimeout(ffmpegTimeout)
-      console.log(`FFmpeg exited with code ${code}, signal ${signal}`)
-
-      // Clean up
+      // Clean up SDP file
       try {
         if (fs.existsSync(sdpFilePath)) {
           fs.unlinkSync(sdpFilePath)
         }
+      } catch (err) {
+        console.error('Error deleting SDP file:', err)
+      }
+    }
 
-        // Check if recording was successful
-        if (fs.existsSync(outputPath)) {
-          const stats = fs.statSync(outputPath)
-          console.log(`Output file size: ${stats.size} bytes`)
-          if (stats.size === 0) {
-            console.error('Output file is empty, recording failed')
+    // Add exit handler
+    ffmpeg.on('exit', (code, signal) => {
+      // Try to check if the file was created successfully
+      if (fs.existsSync(outputPath)) {
+        const stats = fs.statSync(outputPath)
+        console.log(`Output file size: ${stats.size} bytes`)
+        if (stats.size === 0) {
+          console.error('Output file is empty, recording failed')
+          try {
             fs.unlinkSync(outputPath)
-          } else {
-            console.log(`Recording saved to ${outputPath}`)
+          } catch (err) {
+            console.error('Error deleting empty output file:', err)
           }
         } else {
-          console.error('Output file was not created')
+          console.log(`Recording saved to ${outputPath}`)
         }
-      } catch (err) {
-        console.error('Cleanup error:', err)
+      } else {
+        console.error('Output file was not created')
       }
 
-      // Close the transport and consumer if they haven't been closed yet
-      if (plainTransport && !plainTransport.closed) {
-        plainTransport.close()
-      }
+      // Clean up
+      cleanup()
     })
 
-    console.log(`Recording started for producer ${producer.id}`)
+    console.log(`Recording started for producer ${targetProducer.id}`)
 
-    return {
+    // Create recording info object
+    const recordingInfo = {
       plainTransport,
       consumer,
       ffmpeg,
       outputPath,
-      cleanup: () => {
-        clearTimeout(ffmpegTimeout)
-        ffmpeg.kill('SIGINT')
-        if (plainTransport && !plainTransport.closed) plainTransport.close()
-      },
+      port: ffmpegPort!,
+      cleanup,
     }
+
+    // Store in active recordings map
+    activeRecordings.set(targetProducer.id, recordingInfo)
+
+    return recordingInfo
   } catch (error) {
     console.error('Error setting up recording:', error)
+
+    // Make sure to clean up any allocated resources on error
+    // if (ffmpegPort !== undefined) {
+    //   releasePort(ffmpegPort)
+    // }
+
     return null
   }
 }
